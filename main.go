@@ -32,15 +32,27 @@ var cli Config
 
 // Call status values sent over WebSocket (JSON: {"status": "..."}).
 const (
-	statusSendingInvite   = "sending_invite"
-	statusAuthenticating  = "authenticating"
-	statusTrying          = "trying"
-	statusHangingUpTimer  = "hanging_up_timer"
-	statusError           = "error"
+	statusSendingInvite  = "sending_invite"
+	statusAuthenticating = "authenticating"
+	statusTrying         = "trying"
+	statusHangingUpTimer = "hanging_up_timer"
+	statusError          = "error"
 )
 
 type callStatusMsg struct {
 	Status string `json:"status"`
+}
+
+const validCallToken = "12345"
+
+// tokenFromRequest returns the token from Authorization: Token <value> or query ?token=
+func tokenFromRequest(r *http.Request) string {
+	if h := r.Header.Get("Authorization"); h != "" {
+		if strings.HasPrefix(h, "Token ") {
+			return strings.TrimSpace(h[6:])
+		}
+	}
+	return r.URL.Query().Get("token")
 }
 
 var wsUpgrader = websocket.Upgrader{
@@ -51,9 +63,16 @@ const uiHTML = `<!DOCTYPE html>
 <html>
 <head><meta charset="utf-8"><title>Iftach</title></head>
 <body>
+  <div>
+    <label>Token:</label>
+    <input type="text" id="token" placeholder="token" />
+    <button id="set">Set</button>
+    <button id="clear">Clear</button>
+  </div>
   <button id="open">Open</button>
   <div id="out"></div>
   <script>
+    var TOKEN_KEY = 'token';
     var statusLabels = {
       sending_invite: 'Sending INVITE',
       authenticating: 'Authenticating',
@@ -61,10 +80,32 @@ const uiHTML = `<!DOCTYPE html>
       hanging_up_timer: 'Hanging up (5s timer)',
       error: 'Error — check the logs'
     };
+    function getToken() { return localStorage.getItem(TOKEN_KEY) || ''; }
+    function setToken(v) { localStorage.setItem(TOKEN_KEY, v); document.getElementById('token').value = v; }
+    function syncTokenToInput() { document.getElementById('token').value = getToken(); }
+    (function() {
+      var params = new URLSearchParams(location.search);
+      var q = params.get('token');
+      if (q !== null) {
+        setToken(q);
+        history.replaceState({}, '', location.pathname);
+      } else {
+        syncTokenToInput();
+      }
+    })();
+    document.getElementById('set').onclick = function() {
+      setToken(document.getElementById('token').value);
+    };
+    document.getElementById('clear').onclick = function() {
+      localStorage.removeItem(TOKEN_KEY);
+      document.getElementById('token').value = '';
+    };
     document.getElementById('open').onclick = function() {
       var out = document.getElementById('out');
       out.innerHTML = '';
+      var token = getToken();
       var wsUrl = (location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + '/call';
+      if (token) wsUrl += '?token=' + encodeURIComponent(token);
       var ws = new WebSocket(wsUrl);
       ws.onopen = function() {
         addStatus(out, 'Connected — call started');
@@ -80,10 +121,14 @@ const uiHTML = `<!DOCTYPE html>
         }
       };
       ws.onerror = function() {
-        addStatus(out, 'WebSocket error');
+		addStatus(out, 'WebSocket error');
       };
-      ws.onclose = function() {
-        addStatus(out, 'Connection closed');
+      ws.onclose = function(ev) {
+        if (ev.code === 4001) {
+          addStatus(out, '4001: Wrong credentials — check your token and try again.');
+        } else {
+          addStatus(out, 'Connection closed');
+        }
       };
     };
     function addStatus(container, text) {
@@ -121,6 +166,10 @@ func main() {
 			return
 		}
 		defer conn.Close()
+		if tokenFromRequest(r) != validCallToken {
+			_ = conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(4001, "Wrong credentials"))
+			return
+		}
 		// Client only reads; we only write. Stream statuses until run() exits.
 		statusChan := make(chan string, 16)
 		go run(&cli, statusChan)
