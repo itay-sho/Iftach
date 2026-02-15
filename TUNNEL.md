@@ -1,6 +1,6 @@
 # Cloudflare Tunnel
 
-This tunnel exposes the app over HTTPS (TLS at Cloudflare). Configure it entirely via **environment variables** (e.g. in Portainer); no file edits required.
+The app image includes cloudflared. If tunnel env vars are set, the container runs both the app and the tunnel (one container). The tunnel exposes the app over HTTPS (TLS at Cloudflare). Configure it entirely via **environment variables** (e.g. in Portainer); no file edits required.
 
 ## Setup (all via CLI)
 
@@ -57,9 +57,9 @@ Set these in Portainer (or in your `.env` / compose env) so the container can ru
 | `CLOUDFLARE_TUNNEL_CREDENTIALS` | One of these | The full contents of `~/.cloudflared/<TUNNEL_ID>.json`. |
 | `CLOUDFLARE_TUNNEL_CREDENTIALS_B64` | One of these | Base64-encoded credentials JSON (useful if the JSON is hard to paste). |
 | `CLOUDFLARE_TUNNEL_HOSTNAME` | Yes | Hostname for the tunnel (e.g. `app.example.com`). |
-| `CLOUDFLARE_TUNNEL_SERVICE_URL` | No | Backend URL (default: `http://iftach:8080`). |
+| `CLOUDFLARE_TUNNEL_SERVICE_URL` | No | Backend URL inside the container (default: `http://127.0.0.1:8080`). |
 
-**Portainer:** In the stack/service, add the env vars. For `CLOUDFLARE_TUNNEL_CREDENTIALS`, paste the JSON (multi-line is fine). Alternatively, set `CLOUDFLARE_TUNNEL_CREDENTIALS_B64` to the output of:
+**Portainer:** In the stack/service, add the env vars. If tunnel vars are not set, only the app runs. For `CLOUDFLARE_TUNNEL_CREDENTIALS`, paste the JSON (multi-line is fine). Alternatively, set `CLOUDFLARE_TUNNEL_CREDENTIALS_B64` to the output of:
 
 ```bash
 # Linux
@@ -68,4 +68,18 @@ base64 -w0 ~/.cloudflared/<TUNNEL_ID>.json
 base64 -i ~/.cloudflared/<TUNNEL_ID>.json
 ```
 
-Then deploy the stack; cloudflared will generate the config from these env vars and run the tunnel.
+Then deploy the stack; the entrypoint will start the app and cloudflared in the same container.
+
+## Config reference (generated from env in container)
+
+When the tunnel runs, the entrypoint generates a config from env vars. Equivalent YAML:
+
+```yaml
+tunnel: <CLOUDFLARE_TUNNEL_ID>
+credentials-file: /etc/cloudflared/credentials.json
+
+ingress:
+  - hostname: <CLOUDFLARE_TUNNEL_HOSTNAME>
+    service: <CLOUDFLARE_TUNNEL_SERVICE_URL or http://127.0.0.1:8080>
+  - service: http_status:404
+```

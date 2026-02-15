@@ -23,4 +23,3 @@ go.work
 go.work.sum
 
 .env
-cloudflared/credentials.json
