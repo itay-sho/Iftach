@@ -29,6 +29,34 @@ type Config struct {
 
 var cli Config
 
+const uiHTML = `<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>Iftach</title></head>
+<body>
+  <button id="open">Open</button>
+  <pre id="out"></pre>
+  <script>
+    document.getElementById('open').onclick = function() {
+      var out = document.getElementById('out');
+      out.textContent = 'Calling...';
+      var url = new URL('/call', location.href).href;
+      fetch(url, { method: 'POST' }).then(function(res) {
+        var msg = res.status + ' ' + res.statusText;
+        out.textContent = msg;
+        console.log('Response:', res.status, res.statusText, res);
+        return res.text();
+      }).then(function(body) {
+        if (body) { out.textContent += '\n' + body; console.log('Body:', body); }
+      }).catch(function(err) {
+        out.textContent = 'Error: ' + err;
+        console.error('Error:', err);
+      });
+    };
+  </script>
+</body>
+</html>
+`
+
 func main() {
 	kong.Parse(&cli,
 		kong.Name("Iftach"),
@@ -37,13 +65,22 @@ func main() {
 	)
 
 	r := chi.NewRouter()
-	r.Use(middleware.Logger) // log every request: method, path, status, duration
+	r.Use(middleware.Logger)
 	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, "Iftach SIP server. POST /call to start a call.\n")
+		fmt.Fprintf(w, "Iftach SIP server. POST /call to start a call. UI: /ui\n")
 	})
-	r.Post("/call", func(w http.ResponseWriter, r *http.Request) {
+	r.Get("/ui", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(uiHTML))
+	})
+	r.HandleFunc("/call", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost && r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 		go run(&cli)
 	})
@@ -198,42 +235,96 @@ func run(cfg *Config) {
 	}
 	defer tx.Terminate()
 
+	// Require 100 Trying within 2s; start 5s call deadline from 100.
+	const wait100 = 2 * time.Second
+	const callDuration = 5 * time.Second
+	deadline100 := time.Now().Add(wait100)
+	var callDeadline time.Time
+	var deadlineTimer *time.Timer
+
 	for {
+		// If we have a 5s deadline running, it takes precedence over waiting for 100.
+		if !callDeadline.IsZero() {
+			if deadlineTimer == nil {
+				deadlineTimer = time.NewTimer(time.Until(callDeadline))
+				defer deadlineTimer.Stop()
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-deadlineTimer.C:
+				fmt.Println("⏱️  5s from 100 Trying — sending BYE.")
+				sendBYE(client, destURI, req)
+				return
+			case res, ok := <-tx.Responses():
+				if !ok {
+					return
+				}
+				fmt.Printf("⬅️  Received: %d %s\n", res.StatusCode, res.Reason)
+				handled, done := handleResponseAfter100(client, destURI, req, res, callDeadline)
+				if done {
+					return
+				}
+				if handled {
+					continue
+				}
+				// 401/407: resend INVITE with digest auth (non-blocking — we stay in our loop)
+				if res.StatusCode == 401 || res.StatusCode == 407 {
+					fmt.Println("🔐 Resending INVITE with digest auth...")
+					newTx, authErr := client.TransactionDigestAuth(ctx, req, res, sipgo.DigestAuth{
+						Username: cfg.SipUser, Password: cfg.SipPass,
+					})
+					if authErr != nil {
+						fmt.Printf("❌ Auth apply error: %v\n", authErr)
+						return
+					}
+					tx.Terminate()
+					tx = newTx
+					continue
+				}
+				continue
+			case <-tx.Done():
+				return
+			}
+		}
+
+		// Phase 1: wait for 100 Trying within 2s
 		select {
 		case <-ctx.Done():
 			return
-		case res := <-tx.Responses():
-			fmt.Printf("⬅️  Received: %d %s\n", res.StatusCode, res.Reason)
-
-			if res.StatusCode == 401 || res.StatusCode == 407 {
-				fmt.Println("🔐 Authenticating...")
-
-				authRes, err := client.DoDigestAuth(ctx, req, res, sipgo.DigestAuth{
-					Username: cfg.SipUser, Password: cfg.SipPass,
-				})
-				if err != nil {
-					fmt.Printf("❌ Auth Error: %v\n", err)
-					return
-				}
-
-				fmt.Printf("⬅️  Auth Result: %d %s\n", authRes.StatusCode, authRes.Reason)
-
-				if authRes.StatusCode == 200 {
-					handleCallEstablished(client, destURI)
-					return
-				}
-				if authRes.StatusCode >= 300 {
-					fmt.Println("❌ Failed after auth.")
-					return
-				}
-				continue
-			}
-
-			if res.StatusCode == 200 {
-				handleCallEstablished(client, destURI)
+		case <-time.After(time.Until(deadline100)):
+			fmt.Println("❌ No 100 Trying within 2s — cancelling.")
+			sendCANCEL(client, destURI, req)
+			return
+		case res, ok := <-tx.Responses():
+			if !ok {
 				return
 			}
-
+			fmt.Printf("⬅️  Received: %d %s\n", res.StatusCode, res.Reason)
+			if res.StatusCode == 100 {
+				callDeadline = time.Now().Add(callDuration)
+				fmt.Printf("⏱️  100 Trying — 5s call timer started (BYE at %s).\n", callDeadline.Format("15:04:05"))
+				continue
+			}
+			if res.StatusCode == 401 || res.StatusCode == 407 {
+				fmt.Println("🔐 Resending INVITE with digest auth (no 100 yet)...")
+				newTx, authErr := client.TransactionDigestAuth(ctx, req, res, sipgo.DigestAuth{
+					Username: cfg.SipUser, Password: cfg.SipPass,
+				})
+				if authErr != nil {
+					fmt.Printf("❌ Auth apply error: %v\n", authErr)
+					return
+				}
+				tx.Terminate()
+				tx = newTx
+				deadline100 = time.Now().Add(wait100) // require 100 within 2s for this INVITE too
+				continue
+			}
+			if res.StatusCode == 200 {
+				callDeadline = time.Now().Add(callDuration)
+				handleCallEstablished(client, destURI, req, callDeadline)
+				return
+			}
 			if res.StatusCode >= 300 {
 				fmt.Printf("❌ Call Failed: %s\n", res.Reason)
 				return
@@ -244,14 +335,61 @@ func run(cfg *Config) {
 	}
 }
 
-func handleCallEstablished(client *sipgo.Client, destURI sip.Uri) {
-	fmt.Println("✅ CALL ESTABLISHED! (200 OK)")
+// handleResponseAfter100 handles 100/200/4xx after we already got 100. Returns (handled, done).
+func handleResponseAfter100(client *sipgo.Client, destURI sip.Uri, req *sip.Request, res *sip.Response, callDeadline time.Time) (handled, done bool) {
+	if res.StatusCode == 100 {
+		return true, false
+	}
+	if res.StatusCode == 200 {
+		handleCallEstablished(client, destURI, req, callDeadline)
+		return true, true
+	}
+	if res.StatusCode >= 300 {
+		fmt.Printf("❌ Call Failed: %s\n", res.Reason)
+		return true, true
+	}
+	return false, false
+}
 
-	// Send ACK
+func sendCANCEL(client *sipgo.Client, destURI sip.Uri, req *sip.Request) {
+	cancelReq := sip.NewRequest(sip.CANCEL, destURI)
+	cancelReq.RemoveHeader("From")
+	cancelReq.AppendHeader(req.From())
+	cancelReq.RemoveHeader("To")
+	cancelReq.AppendHeader(req.To())
+	cancelReq.RemoveHeader("Call-ID")
+	cancelReq.AppendHeader(req.CallID())
+	cancelReq.RemoveHeader("CSeq")
+	cancelReq.AppendHeader(sip.NewHeader("CSeq", fmt.Sprintf("%d CANCEL", req.CSeq().SeqNo)))
+	cancelReq.RemoveHeader("Via")
+	cancelReq.AppendHeader(req.Via())
+	client.WriteRequest(cancelReq)
+	fmt.Println("🛑 CANCEL sent.")
+}
+
+func sendBYE(client *sipgo.Client, destURI sip.Uri, req *sip.Request) {
+	bye := sip.NewRequest(sip.BYE, destURI)
+	bye.RemoveHeader("From")
+	bye.AppendHeader(req.From())
+	bye.RemoveHeader("To")
+	bye.AppendHeader(req.To())
+	bye.RemoveHeader("Call-ID")
+	bye.AppendHeader(req.CallID())
+	bye.RemoveHeader("CSeq")
+	bye.AppendHeader(sip.NewHeader("CSeq", fmt.Sprintf("%d BYE", req.CSeq().SeqNo+1)))
+	bye.RemoveHeader("Via")
+	bye.AppendHeader(req.Via())
+	client.WriteRequest(bye)
+	fmt.Println("🛑 BYE sent.")
+}
+
+func handleCallEstablished(client *sipgo.Client, destURI sip.Uri, req *sip.Request, callDeadline time.Time) {
+	fmt.Println("✅ CALL ESTABLISHED! (200 OK) — sending ACK.")
 	ack := sip.NewRequest(sip.ACK, destURI)
 	client.WriteRequest(ack)
-
-	fmt.Println("ℹ️  Press Ctrl+C to hangup.")
-	// Just wait forever until Ctrl+C (handled by the Safety Net goroutine)
-	select {}
+	if until := time.Until(callDeadline); until > 0 {
+		fmt.Printf("⏱️  Sending BYE in %v (5s from 100).\n", until.Round(time.Millisecond))
+		time.Sleep(until)
+	}
+	sendBYE(client, destURI, req)
 }
