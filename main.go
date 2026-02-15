@@ -27,6 +27,7 @@ type Config struct {
 	Destination    string `kong:"required,help='Number to call'"`
 	OutgoingNumber string `kong:"help='If set, P-Asserted-Identity header is set to this value'"`
 	ListenAddress  string `kong:"help='HTTP server listen address'"`
+	ListenPort     int    `kong:"help='HTTP server listen port'"`
 }
 
 var cli Config
@@ -174,9 +175,9 @@ func main() {
 		}
 	})
 
-	srv := &http.Server{Addr: cli.ListenAddress, Handler: r}
+	srv := &http.Server{Addr: fmt.Sprintf("%s:%d", cli.ListenAddress, cli.ListenPort), Handler: r}
 	go func() {
-		fmt.Printf("🌐 HTTP server listening on %s (WebSocket /call to start a call)\n", cli.ListenAddress)
+		fmt.Printf("🌐 HTTP server listening on %s:%d (WebSocket /call to start a call)\n", cli.ListenAddress, cli.ListenPort)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			fmt.Fprintf(os.Stderr, "server: %v\n", err)
 		}
