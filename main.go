@@ -21,11 +21,12 @@ import (
 
 // Config holds SIP and call parameters (from CLI, env, or config files).
 type Config struct {
-	SipUser     string `kong:"required,help='SIP user (Zadarma ID)'"`
-	SipPass     string `kong:"required,help='SIP password'"`
-	SipDomain   string `kong:"required,help='SIP domain'"`
-	Destination string `kong:"required,help='Number to call'"`
-	Addr        string `kong:"help='HTTP server listen address',default=':8080'"`
+	SipUser        string `kong:"required,help='SIP user (Zadarma ID)'"`
+	SipPass        string `kong:"required,help='SIP password'"`
+	SipDomain      string `kong:"required,help='SIP domain'"`
+	Destination    string `kong:"required,help='Number to call'"`
+	OutgoingNumber string `kong:"help='If set, P-Asserted-Identity header is set to this value'"`
+	Addr           string `kong:"help='HTTP server listen address',default=':8080'"`
 }
 
 var cli Config
@@ -301,6 +302,10 @@ func run(cfg *Config, statusChan chan<- string) {
 	req.RemoveHeader("Contact")
 	contactHdr := sip.NewHeader("Contact", fmt.Sprintf("<sip:%s@%s>", cfg.SipUser, publicIP))
 	req.AppendHeader(contactHdr)
+
+	if cfg.OutgoingNumber != "" {
+		req.AppendHeader(sip.NewHeader("P-Asserted-Identity", cfg.OutgoingNumber))
+	}
 
 	send(statusSendingInvite)
 
