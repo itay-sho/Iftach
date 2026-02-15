@@ -26,6 +26,7 @@ type Config struct {
 	SipDomain      string `kong:"required,help='SIP domain'"`
 	Destination    string `kong:"required,help='Number to call'"`
 	OutgoingNumber string `kong:"help='If set, P-Asserted-Identity header is set to this value'"`
+	CallToken      string `kong:"help='Token required for WebSocket /call'"`
 	ListenAddress  string `kong:"help='HTTP server listen address'"`
 	ListenPort     int    `kong:"help='HTTP server listen port'"`
 }
@@ -44,8 +45,6 @@ const (
 type callStatusMsg struct {
 	Status string `json:"status"`
 }
-
-const validCallToken = "12345"
 
 // tokenFromRequest returns the token from Authorization: Token <value> or query ?token=
 func tokenFromRequest(r *http.Request) string {
@@ -477,7 +476,7 @@ func main() {
 			return
 		}
 		defer conn.Close()
-		if tokenFromRequest(r) != validCallToken {
+		if tokenFromRequest(r) != cli.CallToken {
 			_ = conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(4001, "Wrong credentials"))
 			return
 		}
