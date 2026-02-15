@@ -6,6 +6,7 @@ require (
 	github.com/alecthomas/kong v1.14.0
 	github.com/emiago/sipgo v1.2.0
 	github.com/go-chi/chi/v5 v5.2.5
+	github.com/gorilla/websocket v1.5.3
 )
 
 require (

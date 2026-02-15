@@ -16,6 +16,7 @@ import (
 	"github.com/emiago/sipgo/sip"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/gorilla/websocket"
 )
 
 // Config holds SIP and call parameters (from CLI, env, or config files).
@@ -29,29 +30,67 @@ type Config struct {
 
 var cli Config
 
+// Call status values sent over WebSocket (JSON: {"status": "..."}).
+const (
+	statusSendingInvite   = "sending_invite"
+	statusAuthenticating  = "authenticating"
+	statusTrying          = "trying"
+	statusHangingUpTimer  = "hanging_up_timer"
+	statusError           = "error"
+)
+
+type callStatusMsg struct {
+	Status string `json:"status"`
+}
+
+var wsUpgrader = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool { return true },
+}
+
 const uiHTML = `<!DOCTYPE html>
 <html>
 <head><meta charset="utf-8"><title>Iftach</title></head>
 <body>
   <button id="open">Open</button>
-  <pre id="out"></pre>
+  <div id="out"></div>
   <script>
+    var statusLabels = {
+      sending_invite: 'Sending INVITE',
+      authenticating: 'Authenticating',
+      trying: 'Trying (100)',
+      hanging_up_timer: 'Hanging up (5s timer)',
+      error: 'Error — check the logs'
+    };
     document.getElementById('open').onclick = function() {
       var out = document.getElementById('out');
-      out.textContent = 'Calling...';
-      var url = new URL('/call', location.href).href;
-      fetch(url, { method: 'POST' }).then(function(res) {
-        var msg = res.status + ' ' + res.statusText;
-        out.textContent = msg;
-        console.log('Response:', res.status, res.statusText, res);
-        return res.text();
-      }).then(function(body) {
-        if (body) { out.textContent += '\n' + body; console.log('Body:', body); }
-      }).catch(function(err) {
-        out.textContent = 'Error: ' + err;
-        console.error('Error:', err);
-      });
+      out.innerHTML = '';
+      var wsUrl = (location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + '/call';
+      var ws = new WebSocket(wsUrl);
+      ws.onopen = function() {
+        addStatus(out, 'Connected — call started');
+      };
+      ws.onmessage = function(ev) {
+        try {
+          var msg = JSON.parse(ev.data);
+          var label = statusLabels[msg.status] || msg.status;
+          addStatus(out, label);
+          if (msg.status === 'error') { ws.close(); }
+        } catch (e) {
+          addStatus(out, 'Invalid message');
+        }
+      };
+      ws.onerror = function() {
+        addStatus(out, 'WebSocket error');
+      };
+      ws.onclose = function() {
+        addStatus(out, 'Connection closed');
+      };
     };
+    function addStatus(container, text) {
+      var p = document.createElement('p');
+      p.textContent = text;
+      container.appendChild(p);
+    }
   </script>
 </body>
 </html>
@@ -69,7 +108,7 @@ func main() {
 	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, "Iftach SIP server. POST /call to start a call. UI: /ui\n")
+		fmt.Fprintf(w, "Iftach SIP server. WebSocket /call to start a call. UI: /ui\n")
 	})
 	r.Get("/ui", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -77,17 +116,22 @@ func main() {
 		w.Write([]byte(uiHTML))
 	})
 	r.HandleFunc("/call", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost && r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		conn, err := wsUpgrader.Upgrade(w, r, nil)
+		if err != nil {
 			return
 		}
-		w.WriteHeader(http.StatusOK)
-		go run(&cli)
+		defer conn.Close()
+		// Client only reads; we only write. Stream statuses until run() exits.
+		statusChan := make(chan string, 16)
+		go run(&cli, statusChan)
+		for s := range statusChan {
+			_ = conn.WriteJSON(callStatusMsg{Status: s})
+		}
 	})
 
 	srv := &http.Server{Addr: cli.Addr, Handler: r}
 	go func() {
-		fmt.Printf("🌐 HTTP server listening on %s (POST /call to start a call)\n", cli.Addr)
+		fmt.Printf("🌐 HTTP server listening on %s (WebSocket /call to start a call)\n", cli.Addr)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			fmt.Fprintf(os.Stderr, "server: %v\n", err)
 		}
@@ -150,7 +194,22 @@ func fetchPublicIPFrom(ctx context.Context, client *http.Client, url string) (st
 	return string(body), nil
 }
 
-func run(cfg *Config) {
+func run(cfg *Config, statusChan chan<- string) {
+	defer func() {
+		if statusChan != nil {
+			close(statusChan)
+		}
+	}()
+
+	send := func(s string) {
+		if statusChan != nil {
+			select {
+			case statusChan <- s:
+			default:
+			}
+		}
+	}
+
 	// 1. Setup Context that cancels on Ctrl+C
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -158,6 +217,7 @@ func run(cfg *Config) {
 	// 2. Discover public IP for Contact header
 	publicIP, err := discoverPublicIP(ctx)
 	if err != nil {
+		send(statusError)
 		panic(fmt.Sprintf("discover public IP: %v", err))
 	}
 	fmt.Printf("🌐 Public IP discovered: %s (used in SIP Contact)\n", publicIP)
@@ -165,6 +225,7 @@ func run(cfg *Config) {
 	// 3. Create User Agent
 	ua, err := sipgo.NewUA(sipgo.WithUserAgentHostname(cfg.SipDomain))
 	if err != nil {
+		send(statusError)
 		panic(err)
 	}
 	defer ua.Close()
@@ -172,6 +233,7 @@ func run(cfg *Config) {
 	// 4. Create Client (Hole Punching Mode - Random Port)
 	client, err := sipgo.NewClient(ua)
 	if err != nil {
+		send(statusError)
 		panic(err)
 	}
 
@@ -190,6 +252,8 @@ func run(cfg *Config) {
 	req.RemoveHeader("Contact")
 	contactHdr := sip.NewHeader("Contact", fmt.Sprintf("<sip:%s@%s>", cfg.SipUser, publicIP))
 	req.AppendHeader(contactHdr)
+
+	send(statusSendingInvite)
 
 	// --- SAFETY NET: Always Hangup on Exit ---
 	go func() {
@@ -231,6 +295,7 @@ func run(cfg *Config) {
 
 	tx, err := client.TransactionRequest(ctx, req)
 	if err != nil {
+		send(statusError)
 		panic(err)
 	}
 	defer tx.Terminate()
@@ -254,6 +319,7 @@ func run(cfg *Config) {
 				return
 			case <-deadlineTimer.C:
 				fmt.Println("⏱️  5s from 100 Trying — sending BYE.")
+				send(statusHangingUpTimer)
 				sendBYE(client, destURI, req)
 				return
 			case res, ok := <-tx.Responses():
@@ -261,7 +327,7 @@ func run(cfg *Config) {
 					return
 				}
 				fmt.Printf("⬅️  Received: %d %s\n", res.StatusCode, res.Reason)
-				handled, done := handleResponseAfter100(client, destURI, req, res, callDeadline)
+				handled, done := handleResponseAfter100(client, destURI, req, res, callDeadline, send)
 				if done {
 					return
 				}
@@ -270,12 +336,14 @@ func run(cfg *Config) {
 				}
 				// 401/407: resend INVITE with digest auth (non-blocking — we stay in our loop)
 				if res.StatusCode == 401 || res.StatusCode == 407 {
+					send(statusAuthenticating)
 					fmt.Println("🔐 Resending INVITE with digest auth...")
 					newTx, authErr := client.TransactionDigestAuth(ctx, req, res, sipgo.DigestAuth{
 						Username: cfg.SipUser, Password: cfg.SipPass,
 					})
 					if authErr != nil {
 						fmt.Printf("❌ Auth apply error: %v\n", authErr)
+						send(statusError)
 						return
 					}
 					tx.Terminate()
@@ -294,6 +362,7 @@ func run(cfg *Config) {
 			return
 		case <-time.After(time.Until(deadline100)):
 			fmt.Println("❌ No 100 Trying within 2s — cancelling.")
+			send(statusError)
 			sendCANCEL(client, destURI, req)
 			return
 		case res, ok := <-tx.Responses():
@@ -302,17 +371,20 @@ func run(cfg *Config) {
 			}
 			fmt.Printf("⬅️  Received: %d %s\n", res.StatusCode, res.Reason)
 			if res.StatusCode == 100 {
+				send(statusTrying)
 				callDeadline = time.Now().Add(callDuration)
 				fmt.Printf("⏱️  100 Trying — 5s call timer started (BYE at %s).\n", callDeadline.Format("15:04:05"))
 				continue
 			}
 			if res.StatusCode == 401 || res.StatusCode == 407 {
+				send(statusAuthenticating)
 				fmt.Println("🔐 Resending INVITE with digest auth (no 100 yet)...")
 				newTx, authErr := client.TransactionDigestAuth(ctx, req, res, sipgo.DigestAuth{
 					Username: cfg.SipUser, Password: cfg.SipPass,
 				})
 				if authErr != nil {
 					fmt.Printf("❌ Auth apply error: %v\n", authErr)
+					send(statusError)
 					return
 				}
 				tx.Terminate()
@@ -322,11 +394,12 @@ func run(cfg *Config) {
 			}
 			if res.StatusCode == 200 {
 				callDeadline = time.Now().Add(callDuration)
-				handleCallEstablished(client, destURI, req, callDeadline)
+				handleCallEstablished(client, destURI, req, callDeadline, send)
 				return
 			}
 			if res.StatusCode >= 300 {
 				fmt.Printf("❌ Call Failed: %s\n", res.Reason)
+				send(statusError)
 				return
 			}
 		case <-tx.Done():
@@ -336,16 +409,19 @@ func run(cfg *Config) {
 }
 
 // handleResponseAfter100 handles 100/200/4xx after we already got 100. Returns (handled, done).
-func handleResponseAfter100(client *sipgo.Client, destURI sip.Uri, req *sip.Request, res *sip.Response, callDeadline time.Time) (handled, done bool) {
+func handleResponseAfter100(client *sipgo.Client, destURI sip.Uri, req *sip.Request, res *sip.Response, callDeadline time.Time, send func(string)) (handled, done bool) {
 	if res.StatusCode == 100 {
 		return true, false
 	}
 	if res.StatusCode == 200 {
-		handleCallEstablished(client, destURI, req, callDeadline)
+		handleCallEstablished(client, destURI, req, callDeadline, send)
 		return true, true
 	}
 	if res.StatusCode >= 300 {
 		fmt.Printf("❌ Call Failed: %s\n", res.Reason)
+		if send != nil {
+			send(statusError)
+		}
 		return true, true
 	}
 	return false, false
@@ -383,13 +459,16 @@ func sendBYE(client *sipgo.Client, destURI sip.Uri, req *sip.Request) {
 	fmt.Println("🛑 BYE sent.")
 }
 
-func handleCallEstablished(client *sipgo.Client, destURI sip.Uri, req *sip.Request, callDeadline time.Time) {
+func handleCallEstablished(client *sipgo.Client, destURI sip.Uri, req *sip.Request, callDeadline time.Time, send func(string)) {
 	fmt.Println("✅ CALL ESTABLISHED! (200 OK) — sending ACK.")
 	ack := sip.NewRequest(sip.ACK, destURI)
 	client.WriteRequest(ack)
 	if until := time.Until(callDeadline); until > 0 {
 		fmt.Printf("⏱️  Sending BYE in %v (5s from 100).\n", until.Round(time.Millisecond))
 		time.Sleep(until)
+	}
+	if send != nil {
+		send(statusHangingUpTimer)
 	}
 	sendBYE(client, destURI, req)
 }
