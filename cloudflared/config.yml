@@ -1,11 +1,11 @@
 # Reference only. When running in Docker/Portainer, config is generated from
 # CLOUDFLARE_TUNNEL_ID, CLOUDFLARE_TUNNEL_CREDENTIALS (or _B64), and optional
-# CLOUDFLARE_TUNNEL_HOSTNAME / CLOUDFLARE_TUNNEL_SERVICE_URL. See README.md.
+# CLOUDFLARE_TUNNEL_HOSTNAME (required) and CLOUDFLARE_TUNNEL_SERVICE_URL. See README.md.
 
 tunnel: YOUR_TUNNEL_ID
 credentials-file: /etc/cloudflared/credentials.json
 
 ingress:
-  - hostname: iftach.rizz.co.il
+  - hostname: your-hostname.example.com
     service: http://iftach:8080
   - service: http_status:404
