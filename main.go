@@ -14,6 +14,8 @@ import (
 	"github.com/alecthomas/kong"
 	"github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
+	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 )
 
 // Config holds SIP and call parameters (from CLI, env, or config files).
@@ -22,6 +24,7 @@ type Config struct {
 	SipPass     string `kong:"required,help='SIP password'"`
 	SipDomain   string `kong:"required,help='SIP domain'"`
 	Destination string `kong:"required,help='Number to call'"`
+	Addr        string `kong:"help='HTTP server listen address',default=':8080'"`
 }
 
 var cli Config
@@ -30,9 +33,34 @@ func main() {
 	kong.Parse(&cli,
 		kong.Name("Iftach"),
 		kong.Description("SIP client to place a call"),
-		kong.DefaultEnvars("IFTACH"), // read SIP_USER, SIP_PASS, etc. from env (e.g. .env via launch.json envFile)
+		kong.DefaultEnvars("IFTACH"),
 	)
-	run(&cli)
+
+	r := chi.NewRouter()
+	r.Use(middleware.Logger) // log every request: method, path, status, duration
+	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, "Iftach SIP server. POST /call to start a call.\n")
+	})
+	r.Post("/call", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		go run(&cli)
+	})
+
+	srv := &http.Server{Addr: cli.Addr, Handler: r}
+	go func() {
+		fmt.Printf("🌐 HTTP server listening on %s (POST /call to start a call)\n", cli.Addr)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			fmt.Fprintf(os.Stderr, "server: %v\n", err)
+		}
+	}()
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	<-ctx.Done()
+	stop()
+	fmt.Println("\n🛑 Shutting down server...")
+	_ = srv.Shutdown(context.Background())
 }
 
 // discoverPublicIP returns this host's public IPv4/IPv6 by querying well-known
@@ -157,8 +185,7 @@ func run(cfg *Config) {
 		client.WriteRequest(bye)
 
 		time.Sleep(500 * time.Millisecond)
-		fmt.Println("🛑 Cleanup sent. Exiting.")
-		os.Exit(0)
+		fmt.Println("🛑 Cleanup sent.")
 	}()
 
 	fmt.Println("----------------------------------------")
