@@ -3,8 +3,11 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -19,7 +22,6 @@ type Config struct {
 	SipPass     string `kong:"required,help='SIP password'"`
 	SipDomain   string `kong:"required,help='SIP domain'"`
 	Destination string `kong:"required,help='Number to call'"`
-	PublicIP    string `kong:"required,help='Your static public IP'"`
 }
 
 var cli Config
@@ -33,25 +35,82 @@ func main() {
 	run(&cli)
 }
 
+// discoverPublicIP returns this host's public IPv4/IPv6 by querying well-known
+// open services. Tries multiple endpoints and returns the first successful result.
+func discoverPublicIP(ctx context.Context) (string, error) {
+	// Services that return plain-text IP (no API key). Try in order.
+	endpoints := []string{
+		"https://api.ipify.org",
+		"https://icanhazip.com",
+		"https://ifconfig.me/ip",
+	}
+	client := &http.Client{Timeout: 8 * time.Second}
+
+	for _, url := range endpoints {
+		fmt.Printf("   Checking public IP via %s ... ", url)
+		ip, err := fetchPublicIPFrom(ctx, client, url)
+		if err != nil {
+			fmt.Printf("failed: %v\n", err)
+			continue
+		}
+		ip = strings.TrimSpace(ip)
+		if ip == "" {
+			fmt.Println("empty response")
+			continue
+		}
+		fmt.Printf("ok → %s\n", ip)
+		return ip, nil
+	}
+
+	return "", fmt.Errorf("all %d endpoints failed", len(endpoints))
+}
+
+func fetchPublicIPFrom(ctx context.Context, client *http.Client, url string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 64))
+	if err != nil {
+		return "", err
+	}
+	return string(body), nil
+}
+
 func run(cfg *Config) {
 	// 1. Setup Context that cancels on Ctrl+C
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	// 2. Create User Agent
+	// 2. Discover public IP for Contact header
+	publicIP, err := discoverPublicIP(ctx)
+	if err != nil {
+		panic(fmt.Sprintf("discover public IP: %v", err))
+	}
+	fmt.Printf("🌐 Public IP discovered: %s (used in SIP Contact)\n", publicIP)
+
+	// 3. Create User Agent
 	ua, err := sipgo.NewUA(sipgo.WithUserAgentHostname(cfg.SipDomain))
 	if err != nil {
 		panic(err)
 	}
 	defer ua.Close()
 
-	// 3. Create Client (Hole Punching Mode - Random Port)
+	// 4. Create Client (Hole Punching Mode - Random Port)
 	client, err := sipgo.NewClient(ua)
 	if err != nil {
 		panic(err)
 	}
 
-	// 4. Construct Request
+	// 5. Construct Request
 	destURI := sip.Uri{User: cfg.Destination, Host: cfg.SipDomain}
 	req := sip.NewRequest(sip.INVITE, destURI)
 
@@ -64,7 +123,7 @@ func run(cfg *Config) {
 	req.AppendHeader(sip.NewHeader("To", toVal))
 
 	req.RemoveHeader("Contact")
-	contactHdr := sip.NewHeader("Contact", fmt.Sprintf("<sip:%s@%s>", cfg.SipUser, cfg.PublicIP))
+	contactHdr := sip.NewHeader("Contact", fmt.Sprintf("<sip:%s@%s>", cfg.SipUser, publicIP))
 	req.AppendHeader(contactHdr)
 
 	// --- SAFETY NET: Always Hangup on Exit ---
