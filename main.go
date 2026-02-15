@@ -26,7 +26,7 @@ type Config struct {
 	SipDomain      string `kong:"required,help='SIP domain'"`
 	Destination    string `kong:"required,help='Number to call'"`
 	OutgoingNumber string `kong:"help='If set, P-Asserted-Identity header is set to this value'"`
-	Addr           string `kong:"help='HTTP server listen address',default=':8080'"`
+	ListenAddress  string `kong:"help='HTTP server listen address'"`
 }
 
 var cli Config
@@ -78,7 +78,7 @@ const uiHTML = `<!DOCTYPE html>
       sending_invite: 'Sending INVITE',
       authenticating: 'Authenticating',
       trying: 'Trying (100)',
-      hanging_up_timer: 'Hanging up (5s timer)',
+      hanging_up_timer: 'Hanging up (12s timer)',
       error: 'Error — check the logs'
     };
     function getToken() { return localStorage.getItem(TOKEN_KEY) || ''; }
@@ -151,11 +151,6 @@ func main() {
 
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
-	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/plain")
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, "Iftach SIP server. WebSocket /call to start a call. UI: /ui\n")
-	})
 	r.Get("/ui", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
@@ -179,9 +174,9 @@ func main() {
 		}
 	})
 
-	srv := &http.Server{Addr: cli.Addr, Handler: r}
+	srv := &http.Server{Addr: cli.ListenAddress, Handler: r}
 	go func() {
-		fmt.Printf("🌐 HTTP server listening on %s (WebSocket /call to start a call)\n", cli.Addr)
+		fmt.Printf("🌐 HTTP server listening on %s (WebSocket /call to start a call)\n", cli.ListenAddress)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			fmt.Fprintf(os.Stderr, "server: %v\n", err)
 		}
@@ -354,9 +349,9 @@ func run(cfg *Config, statusChan chan<- string) {
 	}
 	defer tx.Terminate()
 
-	// Require 100 Trying within 2s; start 5s call deadline from 100.
+	// Require 100 Trying within 2s; start 12s call deadline from 100.
 	const wait100 = 2 * time.Second
-	const callDuration = 5 * time.Second
+	const callDuration = 12 * time.Second
 	const maxAuthAttempts = 3
 	deadline100 := time.Now().Add(wait100)
 	var callDeadline time.Time
@@ -364,7 +359,7 @@ func run(cfg *Config, statusChan chan<- string) {
 	var authChallengeCount int
 
 	for {
-		// If we have a 5s deadline running, it takes precedence over waiting for 100.
+		// If we have a 12s deadline running, it takes precedence over waiting for 100.
 		if !callDeadline.IsZero() {
 			if deadlineTimer == nil {
 				deadlineTimer = time.NewTimer(time.Until(callDeadline))
@@ -374,7 +369,7 @@ func run(cfg *Config, statusChan chan<- string) {
 			case <-ctx.Done():
 				return
 			case <-deadlineTimer.C:
-				fmt.Println("⏱️  5s from 100 Trying — sending BYE.")
+				fmt.Println("⏱️  12s from 100 Trying — sending BYE.")
 				send(statusHangingUpTimer)
 				sendBYE(client, destURI, req)
 				return
@@ -435,7 +430,7 @@ func run(cfg *Config, statusChan chan<- string) {
 			if res.StatusCode == 100 {
 				send(statusTrying)
 				callDeadline = time.Now().Add(callDuration)
-				fmt.Printf("⏱️  100 Trying — 5s call timer started (BYE at %s).\n", callDeadline.Format("15:04:05"))
+				fmt.Printf("⏱️  100 Trying — 12s call timer started (BYE at %s).\n", callDeadline.Format("15:04:05"))
 				continue
 			}
 			if res.StatusCode == 401 || res.StatusCode == 407 {
@@ -532,7 +527,7 @@ func handleCallEstablished(client *sipgo.Client, destURI sip.Uri, req *sip.Reque
 	ack := sip.NewRequest(sip.ACK, destURI)
 	client.WriteRequest(ack)
 	if until := time.Until(callDeadline); until > 0 {
-		fmt.Printf("⏱️  Sending BYE in %v (5s from 100).\n", until.Round(time.Millisecond))
+		fmt.Printf("⏱️  Sending BYE in %v (12s from 100).\n", until.Round(time.Millisecond))
 		time.Sleep(until)
 	}
 	if send != nil {

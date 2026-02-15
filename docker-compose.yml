@@ -1,0 +1,13 @@
+services:
+  iftach:
+    build: .
+    ports:
+      - "${IFTACH_LISTEN_PORT}:${IFTACH_LISTEN_PORT}"
+    environment:
+      IFTACH_SIP_USER: ${IFTACH_SIP_USER}
+      IFTACH_SIP_PASS: ${IFTACH_SIP_PASS}
+      IFTACH_SIP_DOMAIN: ${IFTACH_SIP_DOMAIN}
+      IFTACH_DESTINATION: ${IFTACH_DESTINATION}
+      IFTACH_OUTGOING_NUMBER: ${IFTACH_OUTGOING_NUMBER:-}
+      IFTACH_LISTEN_ADDRESS: ${IFTACH_LISTEN_ADDRESS:-:8080}
+    restart: unless-stopped
