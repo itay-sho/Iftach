@@ -62,83 +62,404 @@ var wsUpgrader = websocket.Upgrader{
 }
 
 const uiHTML = `<!DOCTYPE html>
-<html>
-<head><meta charset="utf-8"><title>Iftach</title></head>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Gate Control</title>
+    <style>
+        :root {
+            --bg-color: #000000;
+            --main-green: #00ff41; /* Hacker/Neon Green */
+            --main-grey: #666666;
+            --main-red: #ff3333;
+            --font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: white;
+            font-family: var(--font-family);
+            margin: 0;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: space-between; /* Space out content vertically */
+            overflow: hidden; /* Prevent scrolling on mobile */
+        }
+
+        /* --- Main Layout --- */
+        .container {
+            flex-grow: 1;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            width: 100%;
+        }
+
+        /* --- The Big Button --- */
+        #open-btn {
+            width: 250px;
+            height: 250px;
+            border-radius: 50%; /* Circle */
+            background: transparent;
+            font-size: 2rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            cursor: pointer;
+            border: 4px solid currentColor; /* Takes the color from the text color */
+            transition: all 0.3s ease;
+            outline: none;
+            -webkit-tap-highlight-color: transparent;
+            
+            /* Center text */
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        #open-btn:active {
+            transform: scale(0.95);
+        }
+
+        /* Button States */
+        .state-ready {
+            color: var(--main-green);
+            box-shadow: 0 0 20px rgba(0, 255, 65, 0.2);
+        }
+
+        .state-disabled {
+            color: var(--main-grey);
+            border-color: var(--main-grey);
+            pointer-events: none; /* Make unclickable */
+            box-shadow: none;
+        }
+
+        .state-error {
+            color: var(--main-red);
+            box-shadow: 0 0 20px rgba(255, 51, 51, 0.3);
+            animation: shake 0.5s;
+        }
+
+        @keyframes shake {
+            0% { transform: translate(1px, 1px) rotate(0deg); }
+            10% { transform: translate(-1px, -2px) rotate(-1deg); }
+            20% { transform: translate(-3px, 0px) rotate(1deg); }
+            30% { transform: translate(3px, 2px) rotate(0deg); }
+            40% { transform: translate(1px, -1px) rotate(1deg); }
+            50% { transform: translate(-1px, 2px) rotate(-1deg); }
+            60% { transform: translate(-3px, 1px) rotate(0deg); }
+            70% { transform: translate(3px, 1px) rotate(-1deg); }
+            80% { transform: translate(-1px, -1px) rotate(1deg); }
+            90% { transform: translate(1px, 2px) rotate(0deg); }
+            100% { transform: translate(1px, -2px) rotate(-1deg); }
+        }
+
+        /* --- Status Log --- */
+        #status-display {
+            margin-top: 40px;
+            height: 30px;
+            color: #aaa;
+            font-family: monospace;
+            font-size: 1rem;
+            text-align: center;
+            padding: 0 20px;
+        }
+
+        /* --- Footer / Settings --- */
+        .footer {
+            padding: 20px;
+            width: 100%;
+            display: flex;
+            justify-content: center;
+        }
+
+        #settings-trigger {
+            background: transparent;
+            border: 1px solid #333;
+            color: #888;
+            padding: 10px 20px;
+            border-radius: 20px;
+            font-size: 0.9rem;
+            cursor: pointer;
+            transition: color 0.2s;
+        }
+        
+        #settings-trigger.has-token {
+            color: var(--main-green);
+            border-color: var(--main-green);
+        }
+
+        /* --- Modal --- */
+        .modal-overlay {
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.95);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.3s ease;
+            z-index: 100;
+        }
+
+        .modal-overlay.active {
+            opacity: 1;
+            pointer-events: auto;
+        }
+
+        .modal-content {
+            width: 90%;
+            max-width: 400px;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        .input-group {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        input[type="text"] {
+            background: transparent;
+            border: 2px solid var(--main-green);
+            color: white;
+            padding: 15px;
+            font-size: 1.2rem;
+            text-align: center;
+            border-radius: 8px;
+            outline: none;
+        }
+
+        /* Standard buttons for modal */
+        .btn-action {
+            background: transparent;
+            border: 2px solid var(--main-green);
+            color: var(--main-green);
+            padding: 15px;
+            font-size: 1.1rem;
+            font-weight: bold;
+            cursor: pointer;
+            border-radius: 8px;
+            text-transform: uppercase;
+        }
+
+        .btn-action.secondary {
+            border-color: var(--main-grey);
+            color: var(--main-grey);
+        }
+        
+        .btn-action.danger {
+            border-color: var(--main-red);
+            color: var(--main-red);
+        }
+
+        .hidden { display: none; }
+
+    </style>
+</head>
 <body>
-  <div>
-    <label>Token:</label>
-    <input type="text" id="token" placeholder="token" />
-    <button id="set">Set</button>
-    <button id="clear">Clear</button>
-  </div>
-  <button id="open">Open</button>
-  <div id="out"></div>
-  <script>
-    var TOKEN_KEY = 'token';
-    var statusLabels = {
-      sending_invite: 'Sending INVITE',
-      authenticating: 'Authenticating',
-      trying: 'Trying (100)',
-      hanging_up_timer: 'Hanging up (12s timer)',
-      error: 'Error — check the logs'
-    };
-    function getToken() { return localStorage.getItem(TOKEN_KEY) || ''; }
-    function setToken(v) { localStorage.setItem(TOKEN_KEY, v); document.getElementById('token').value = v; }
-    function syncTokenToInput() { document.getElementById('token').value = getToken(); }
-    (function() {
-      var params = new URLSearchParams(location.search);
-      var q = params.get('token');
-      if (q !== null) {
-        setToken(q);
-        history.replaceState({}, '', location.pathname);
-      } else {
-        syncTokenToInput();
-      }
-    })();
-    document.getElementById('set').onclick = function() {
-      setToken(document.getElementById('token').value);
-    };
-    document.getElementById('clear').onclick = function() {
-      localStorage.removeItem(TOKEN_KEY);
-      document.getElementById('token').value = '';
-    };
-    document.getElementById('open').onclick = function() {
-      var out = document.getElementById('out');
-      out.innerHTML = '';
-      var token = getToken();
-      var wsUrl = (location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + '/call';
-      if (token) wsUrl += '?token=' + encodeURIComponent(token);
-      var ws = new WebSocket(wsUrl);
-      ws.onopen = function() {
-        addStatus(out, 'Connected — call started');
-      };
-      ws.onmessage = function(ev) {
-        try {
-          var msg = JSON.parse(ev.data);
-          var label = statusLabels[msg.status] || msg.status;
-          addStatus(out, label);
-          if (msg.status === 'error') { ws.close(); }
-        } catch (e) {
-          addStatus(out, 'Invalid message');
+
+    <div class="container">
+        <button id="open-btn" class="state-ready">OPEN</button>
+        <div id="status-display">Ready</div>
+    </div>
+
+    <div class="footer">
+        <button id="settings-trigger">Set Token</button>
+    </div>
+
+    <div id="modal" class="modal-overlay">
+        <div class="modal-content">
+            <h2 style="text-align: center; color: var(--main-green); margin: 0 0 10px 0;">Configuration</h2>
+            
+            <div class="input-group">
+                <input type="text" id="token-input" placeholder="Paste Token Here" autocomplete="off">
+            </div>
+
+            <button id="save-token" class="btn-action">Save Token</button>
+            <button id="clear-token" class="btn-action danger">Clear Token</button>
+            <button id="close-modal" class="btn-action secondary">Cancel</button>
+        </div>
+    </div>
+
+    <script>
+        // --- Constants & State ---
+        const TOKEN_KEY = 'token';
+        const STATUS_LABELS = {
+            sending_invite: 'Sending INVITE...',
+            authenticating: 'Authenticating...',
+            trying: 'Trying (100)...',
+            hanging_up_timer: 'Hanging up (12s timer)',
+            error: 'Error — check logs'
+        };
+
+        const els = {
+            btn: document.getElementById('open-btn'),
+            status: document.getElementById('status-display'),
+            settingsTrigger: document.getElementById('settings-trigger'),
+            modal: document.getElementById('modal'),
+            input: document.getElementById('token-input'),
+            saveBtn: document.getElementById('save-token'),
+            clearBtn: document.getElementById('clear-token'),
+            closeBtn: document.getElementById('close-modal')
+        };
+
+        // --- Core Functions ---
+
+        function getToken() { 
+            return localStorage.getItem(TOKEN_KEY) || ''; 
         }
-      };
-      ws.onerror = function() {
-		addStatus(out, 'WebSocket error');
-      };
-      ws.onclose = function(ev) {
-        if (ev.code === 4001) {
-          addStatus(out, '4001: Wrong credentials — check your token and try again.');
-        } else {
-          addStatus(out, 'Connection closed');
+
+        function setToken(v) { 
+            if(v) {
+                localStorage.setItem(TOKEN_KEY, v); 
+            } else {
+                localStorage.removeItem(TOKEN_KEY);
+            }
+            updateSettingsUI();
         }
-      };
-    };
-    function addStatus(container, text) {
-      var p = document.createElement('p');
-      p.textContent = text;
-      container.appendChild(p);
-    }
-  </script>
+
+        function updateSettingsUI() {
+            const token = getToken();
+            els.input.value = token;
+            
+            if (token) {
+                els.settingsTrigger.textContent = "Token Set (Change)";
+                els.settingsTrigger.classList.add('has-token');
+            } else {
+                els.settingsTrigger.textContent = "Token Unset (Set)";
+                els.settingsTrigger.classList.remove('has-token');
+            }
+        }
+
+        function setStatus(text) {
+            // Only keeping the last line
+            els.status.textContent = text;
+        }
+
+        function setButtonState(state) {
+            // Reset classes
+            els.btn.className = '';
+            els.btn.disabled = false;
+
+            if (state === 'ready') {
+                els.btn.classList.add('state-ready');
+                els.btn.textContent = 'OPEN';
+            } else if (state === 'processing') {
+                els.btn.classList.add('state-disabled');
+                els.btn.disabled = true;
+                els.btn.textContent = '...';
+            } else if (state === 'error') {
+                els.btn.classList.add('state-error');
+                els.btn.textContent = 'FAILED';
+                // Automatically revert to ready after 2 seconds
+                setTimeout(() => setButtonState('ready'), 2000);
+            }
+        }
+
+        // --- WebSocket Logic ---
+
+        function triggerOpen() {
+            setStatus('');
+            setButtonState('processing');
+
+            const token = getToken();
+            let wsUrl = (location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + '/call';
+            if (token) wsUrl += '?token=' + encodeURIComponent(token);
+
+            const ws = new WebSocket(wsUrl);
+            let hasError = false;
+
+            ws.onopen = function() {
+                setStatus('Connected — call started');
+            };
+
+            ws.onmessage = function(ev) {
+                try {
+                    const msg = JSON.parse(ev.data);
+                    const label = STATUS_LABELS[msg.status] || msg.status;
+                    setStatus(label);
+                    if (msg.status === 'error') { 
+                        hasError = true;
+                        ws.close(); 
+                    }
+                } catch (e) {
+                    setStatus('Invalid message received');
+                }
+            };
+
+            ws.onerror = function() {
+                setStatus('WebSocket connection error');
+                hasError = true;
+            };
+
+            ws.onclose = function(ev) {
+                if (ev.code === 4001) {
+                    setStatus('4001: Wrong credentials');
+                    hasError = true;
+                } else if (!hasError) {
+                    setStatus('Connection closed');
+                }
+
+                if (hasError) {
+                    setButtonState('error');
+                } else {
+                    setButtonState('ready');
+                }
+            };
+        }
+
+        // --- Event Listeners ---
+
+        // Initialize from URL Param if present
+        (function() {
+            const params = new URLSearchParams(location.search);
+            const q = params.get('token');
+            if (q !== null) {
+                setToken(q);
+                // Clean URL
+                history.replaceState({}, '', location.pathname);
+            }
+            updateSettingsUI();
+        })();
+
+        // Open Button
+        els.btn.onclick = triggerOpen;
+
+        // Modal Handling
+        els.settingsTrigger.onclick = () => {
+            els.modal.classList.add('active');
+            els.input.focus();
+        };
+
+        const closeModal = () => els.modal.classList.remove('active');
+        els.closeBtn.onclick = closeModal;
+        
+        // Clicking outside modal content closes it
+        els.modal.onclick = (e) => {
+            if (e.target === els.modal) closeModal();
+        };
+
+        els.saveBtn.onclick = () => {
+            setToken(els.input.value.trim());
+            closeModal();
+            setStatus('Token saved');
+        };
+
+        els.clearBtn.onclick = () => {
+            setToken('');
+            els.input.value = '';
+            closeModal();
+            setStatus('Token cleared');
+        };
+
+    </script>
 </body>
 </html>
 `
