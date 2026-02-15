@@ -303,9 +303,11 @@ func run(cfg *Config, statusChan chan<- string) {
 	// Require 100 Trying within 2s; start 5s call deadline from 100.
 	const wait100 = 2 * time.Second
 	const callDuration = 5 * time.Second
+	const maxAuthAttempts = 3
 	deadline100 := time.Now().Add(wait100)
 	var callDeadline time.Time
 	var deadlineTimer *time.Timer
+	var authChallengeCount int
 
 	for {
 		// If we have a 5s deadline running, it takes precedence over waiting for 100.
@@ -334,10 +336,16 @@ func run(cfg *Config, statusChan chan<- string) {
 				if handled {
 					continue
 				}
-				// 401/407: resend INVITE with digest auth (non-blocking — we stay in our loop)
+				// 401/407: resend INVITE with digest auth, but give up after max attempts
 				if res.StatusCode == 401 || res.StatusCode == 407 {
+					authChallengeCount++
+					fmt.Printf("🔐 Auth challenge %d/%d (407/401)\n", authChallengeCount, maxAuthAttempts)
+					if authChallengeCount > maxAuthAttempts {
+						fmt.Printf("❌ Too many auth challenges (%d) — giving up.\n", authChallengeCount)
+						send(statusError)
+						return
+					}
 					send(statusAuthenticating)
-					fmt.Println("🔐 Resending INVITE with digest auth...")
 					newTx, authErr := client.TransactionDigestAuth(ctx, req, res, sipgo.DigestAuth{
 						Username: cfg.SipUser, Password: cfg.SipPass,
 					})
@@ -377,8 +385,14 @@ func run(cfg *Config, statusChan chan<- string) {
 				continue
 			}
 			if res.StatusCode == 401 || res.StatusCode == 407 {
+				authChallengeCount++
+				fmt.Printf("🔐 Auth challenge %d/%d (407/401, no 100 yet)\n", authChallengeCount, maxAuthAttempts)
+				if authChallengeCount > maxAuthAttempts {
+					fmt.Printf("❌ Too many auth challenges (%d) — giving up.\n", authChallengeCount)
+					send(statusError)
+					return
+				}
 				send(statusAuthenticating)
-				fmt.Println("🔐 Resending INVITE with digest auth (no 100 yet)...")
 				newTx, authErr := client.TransactionDigestAuth(ctx, req, res, sipgo.DigestAuth{
 					Username: cfg.SipUser, Password: cfg.SipPass,
 				})
