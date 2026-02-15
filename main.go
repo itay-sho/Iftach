@@ -65,7 +65,7 @@ const uiHTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>Gate Control</title>
     <style>
         :root {
@@ -81,12 +81,14 @@ const uiHTML = `<!DOCTYPE html>
             color: white;
             font-family: var(--font-family);
             margin: 0;
+            /* Use dvh (Dynamic Viewport Height) to account for mobile address bars */
             height: 100vh;
+            height: 100dvh; 
             display: flex;
             flex-direction: column;
             align-items: center;
-            justify-content: space-between; /* Space out content vertically */
-            overflow: hidden; /* Prevent scrolling on mobile */
+            justify-content: space-between; 
+            overflow: hidden; 
         }
 
         /* --- Main Layout --- */
@@ -103,21 +105,20 @@ const uiHTML = `<!DOCTYPE html>
         #open-btn {
             width: 250px;
             height: 250px;
-            border-radius: 50%; /* Circle */
+            border-radius: 50%;
             background: transparent;
             font-size: 2rem;
             font-weight: 700;
             text-transform: uppercase;
             cursor: pointer;
-            border: 4px solid currentColor; /* Takes the color from the text color */
+            border: 4px solid currentColor;
             transition: all 0.3s ease;
             outline: none;
             -webkit-tap-highlight-color: transparent;
-            
-            /* Center text */
             display: flex;
             align-items: center;
             justify-content: center;
+            user-select: none;
         }
 
         #open-btn:active {
@@ -133,7 +134,7 @@ const uiHTML = `<!DOCTYPE html>
         .state-disabled {
             color: var(--main-grey);
             border-color: var(--main-grey);
-            pointer-events: none; /* Make unclickable */
+            pointer-events: none;
             box-shadow: none;
         }
 
@@ -170,21 +171,25 @@ const uiHTML = `<!DOCTYPE html>
 
         /* --- Footer / Settings --- */
         .footer {
-            padding: 20px;
             width: 100%;
             display: flex;
             justify-content: center;
+            /* Extra padding for mobile bottom bar / safe area */
+            padding-bottom: max(30px, env(safe-area-inset-bottom));
+            padding-top: 20px;
+            background: linear-gradient(to top, black 20%, transparent); /* slight fade to ensure readability */
         }
 
         #settings-trigger {
             background: transparent;
             border: 1px solid #333;
             color: #888;
-            padding: 10px 20px;
-            border-radius: 20px;
-            font-size: 0.9rem;
+            padding: 12px 24px; /* Larger touch target */
+            border-radius: 30px;
+            font-size: 1rem;
             cursor: pointer;
             transition: color 0.2s;
+            -webkit-tap-highlight-color: transparent;
         }
         
         #settings-trigger.has-token {
@@ -204,6 +209,7 @@ const uiHTML = `<!DOCTYPE html>
             pointer-events: none;
             transition: opacity 0.3s ease;
             z-index: 100;
+            backdrop-filter: blur(5px);
         }
 
         .modal-overlay.active {
@@ -212,41 +218,37 @@ const uiHTML = `<!DOCTYPE html>
         }
 
         .modal-content {
-            width: 90%;
-            max-width: 400px;
+            width: 85%;
+            max-width: 350px;
             display: flex;
             flex-direction: column;
-            gap: 20px;
-        }
-
-        .input-group {
-            display: flex;
-            flex-direction: column;
-            gap: 10px;
+            gap: 15px;
         }
 
         input[type="text"] {
-            background: transparent;
+            background: #111;
             border: 2px solid var(--main-green);
             color: white;
             padding: 15px;
-            font-size: 1.2rem;
+            font-size: 1.1rem;
             text-align: center;
             border-radius: 8px;
             outline: none;
+            width: 100%;
+            box-sizing: border-box; /* Fixes padding issues */
         }
 
-        /* Standard buttons for modal */
         .btn-action {
             background: transparent;
             border: 2px solid var(--main-green);
             color: var(--main-green);
             padding: 15px;
-            font-size: 1.1rem;
+            font-size: 1rem;
             font-weight: bold;
             cursor: pointer;
             border-radius: 8px;
             text-transform: uppercase;
+            width: 100%;
         }
 
         .btn-action.secondary {
@@ -258,9 +260,6 @@ const uiHTML = `<!DOCTYPE html>
             border-color: var(--main-red);
             color: var(--main-red);
         }
-
-        .hidden { display: none; }
-
     </style>
 </head>
 <body>
@@ -276,11 +275,9 @@ const uiHTML = `<!DOCTYPE html>
 
     <div id="modal" class="modal-overlay">
         <div class="modal-content">
-            <h2 style="text-align: center; color: var(--main-green); margin: 0 0 10px 0;">Configuration</h2>
+            <h2 style="text-align: center; color: var(--main-green); margin: 0 0 10px 0;">Setup</h2>
             
-            <div class="input-group">
-                <input type="text" id="token-input" placeholder="Paste Token Here" autocomplete="off">
-            </div>
+            <input type="text" id="token-input" placeholder="Paste Token Here" autocomplete="off">
 
             <button id="save-token" class="btn-action">Save Token</button>
             <button id="clear-token" class="btn-action danger">Clear Token</button>
@@ -339,12 +336,10 @@ const uiHTML = `<!DOCTYPE html>
         }
 
         function setStatus(text) {
-            // Only keeping the last line
             els.status.textContent = text;
         }
 
         function setButtonState(state) {
-            // Reset classes
             els.btn.className = '';
             els.btn.disabled = false;
 
@@ -358,7 +353,6 @@ const uiHTML = `<!DOCTYPE html>
             } else if (state === 'error') {
                 els.btn.classList.add('state-error');
                 els.btn.textContent = 'FAILED';
-                // Automatically revert to ready after 2 seconds
                 setTimeout(() => setButtonState('ready'), 2000);
             }
         }
@@ -417,31 +411,30 @@ const uiHTML = `<!DOCTYPE html>
 
         // --- Event Listeners ---
 
-        // Initialize from URL Param if present
         (function() {
             const params = new URLSearchParams(location.search);
             const q = params.get('token');
             if (q !== null) {
                 setToken(q);
-                // Clean URL
                 history.replaceState({}, '', location.pathname);
             }
             updateSettingsUI();
         })();
 
-        // Open Button
         els.btn.onclick = triggerOpen;
 
-        // Modal Handling
         els.settingsTrigger.onclick = () => {
             els.modal.classList.add('active');
-            els.input.focus();
+            // Small delay to allow modal to render before focusing (fixes some mobile keyboard glitches)
+            setTimeout(() => els.input.focus(), 100);
         };
 
-        const closeModal = () => els.modal.classList.remove('active');
-        els.closeBtn.onclick = closeModal;
+        const closeModal = () => {
+            els.modal.classList.remove('active');
+            els.input.blur(); // Hide keyboard
+        }
         
-        // Clicking outside modal content closes it
+        els.closeBtn.onclick = closeModal;
         els.modal.onclick = (e) => {
             if (e.target === els.modal) closeModal();
         };
