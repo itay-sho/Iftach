@@ -57,7 +57,6 @@ Set these in Portainer (or in your `.env` / compose env) so the container can ru
 | `CLOUDFLARE_TUNNEL_CREDENTIALS` | One of these | The full contents of `~/.cloudflared/<TUNNEL_ID>.json`. |
 | `CLOUDFLARE_TUNNEL_CREDENTIALS_B64` | One of these | Base64-encoded credentials JSON (useful if the JSON is hard to paste). |
 | `CLOUDFLARE_TUNNEL_HOSTNAME` | Yes | Hostname for the tunnel (e.g. `app.example.com`). |
-| `CLOUDFLARE_TUNNEL_SERVICE_URL` | No | Backend URL inside the container (default: `http://127.0.0.1:8080`). |
 
 **Portainer:** In the stack/service, add the env vars. If tunnel vars are not set, only the app runs. For `CLOUDFLARE_TUNNEL_CREDENTIALS`, paste the JSON (multi-line is fine). Alternatively, set `CLOUDFLARE_TUNNEL_CREDENTIALS_B64` to the output of:
 
@@ -80,6 +79,6 @@ credentials-file: /etc/cloudflared/credentials.json
 
 ingress:
   - hostname: <CLOUDFLARE_TUNNEL_HOSTNAME>
-    service: <CLOUDFLARE_TUNNEL_SERVICE_URL or http://127.0.0.1:8080>
+    service: <http://127.0.0.1:${IFTACH_LISTEN_PORT}>
   - service: http_status:404
 ```
