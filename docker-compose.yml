@@ -1,6 +1,7 @@
 services:
   iftach:
     build: .
+    network_mode: bridge
     ports:
       - "${IFTACH_LISTEN_PORT}:${IFTACH_LISTEN_PORT}"
     environment:
@@ -16,5 +17,4 @@ services:
       CLOUDFLARE_TUNNEL_CREDENTIALS: ${CLOUDFLARE_TUNNEL_CREDENTIALS:-}
       CLOUDFLARE_TUNNEL_CREDENTIALS_B64: ${CLOUDFLARE_TUNNEL_CREDENTIALS_B64:-}
       CLOUDFLARE_TUNNEL_HOSTNAME: ${CLOUDFLARE_TUNNEL_HOSTNAME:-}
-      CLOUDFLARE_TUNNEL_SERVICE_URL: ${CLOUDFLARE_TUNNEL_SERVICE_URL:-http://127.0.0.1:8080}
     restart: unless-stopped
