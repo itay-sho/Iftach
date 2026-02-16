@@ -40,6 +40,7 @@ const (
 	statusAuthenticating = "authenticating"
 	statusTrying         = "trying"
 	statusHangingUpTimer = "hanging_up_timer"
+	statusBusy           = "busy"
 	statusError          = "error"
 )
 
@@ -293,6 +294,7 @@ const uiHTML = `<!DOCTYPE html>
             authenticating: 'Authenticating...',
             trying: 'Trying (100)...',
             hanging_up_timer: 'Hanging up (12s timer)',
+            busy: 'Busy (486)',
             error: 'Error — check logs'
         };
 
@@ -799,6 +801,11 @@ func run(cfg *Config, statusChan chan<- string) {
 				handleCallEstablished(client, destURI, req, callDeadline, send)
 				return
 			}
+			if res.StatusCode == 486 {
+				fmt.Printf("📵 Busy Here (486): %s\n", res.Reason)
+				send(statusBusy)
+				return
+			}
 			if res.StatusCode >= 300 {
 				fmt.Printf("❌ Call Failed: %s\n", res.Reason)
 				send(statusError)
@@ -817,6 +824,13 @@ func handleResponseAfter100(client *sipgo.Client, destURI sip.Uri, req *sip.Requ
 	}
 	if res.StatusCode == 200 {
 		handleCallEstablished(client, destURI, req, callDeadline, send)
+		return true, true
+	}
+	if res.StatusCode == 486 {
+		fmt.Printf("📵 Busy Here (486): %s\n", res.Reason)
+		if send != nil {
+			send(statusBusy)
+		}
 		return true, true
 	}
 	if res.StatusCode >= 300 {
