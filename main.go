@@ -29,6 +29,7 @@ type Config struct {
 	CallToken      string `kong:"help='Token required for WebSocket /call'"`
 	ListenAddress  string `kong:"help='HTTP server listen address'"`
 	ListenPort     int    `kong:"help='HTTP server listen port'"`
+	UseTls         bool   `kong:"help='Use TLS for the call',default='true'"`
 }
 
 var cli Config
@@ -582,6 +583,7 @@ func run(cfg *Config, statusChan chan<- string) {
 	fmt.Printf("🌐 Public IP discovered: %s (used in SIP Contact)\n", publicIP)
 
 	// 3. Create User Agent
+	// The library will automatically load TLS transport if we dial a TLS destination.
 	ua, err := sipgo.NewUA(sipgo.WithUserAgentHostname(cfg.SipDomain))
 	if err != nil {
 		send(statusError)
@@ -596,20 +598,38 @@ func run(cfg *Config, statusChan chan<- string) {
 		panic(err)
 	}
 
-	// 5. Construct Request
-	destURI := sip.Uri{User: cfg.Destination, Host: cfg.SipDomain}
+	extraTls := ""
+	port := 5060
+	if cfg.UseTls {
+		extraTls = ";transport=tls"
+		port = 5061
+	}
+
+	// 5. Construct Request for TLS (Port 5061)
+	destURI := sip.Uri{
+		User:      cfg.Destination,
+		Host:      cfg.SipDomain,
+		Port:      port,
+		UriParams: sip.HeaderParams{}, // Initialize empty slice
+	}
+	if cfg.UseTls {
+		// Correct way to add params in newer sipgo versions:
+		destURI.UriParams.Add("transport", "tls")
+	}
+
 	req := sip.NewRequest(sip.INVITE, destURI)
 
-	fromVal := fmt.Sprintf("<sip:%s@%s>;tag=%d", cfg.SipUser, cfg.SipDomain, time.Now().Unix())
+	// Update Headers for TLS
+	fromVal := fmt.Sprintf("<sip:%s@%s;%s>;tag=%d", cfg.SipUser, cfg.SipDomain, extraTls, time.Now().Unix())
 	req.RemoveHeader("From")
 	req.AppendHeader(sip.NewHeader("From", fromVal))
 
-	toVal := fmt.Sprintf("<sip:%s@%s>", cfg.Destination, cfg.SipDomain)
+	toVal := fmt.Sprintf("<sip:%s@%s;%s>", cfg.Destination, cfg.SipDomain, extraTls)
 	req.RemoveHeader("To")
 	req.AppendHeader(sip.NewHeader("To", toVal))
 
 	req.RemoveHeader("Contact")
-	contactHdr := sip.NewHeader("Contact", fmt.Sprintf("<sip:%s@%s>", cfg.SipUser, publicIP))
+	contactHdr := sip.NewHeader("Contact", fmt.Sprintf("<sip:%s@%s;%s>", cfg.SipUser, publicIP, extraTls))
 	req.AppendHeader(contactHdr)
 
 	if cfg.OutgoingNumber != "" {
@@ -653,7 +673,12 @@ func run(cfg *Config, statusChan chan<- string) {
 	}()
 
 	fmt.Println("----------------------------------------")
-	fmt.Printf("📞 Dialing %s@%s...\n", cfg.Destination, cfg.SipDomain)
+	if cfg.UseTls {
+		fmt.Printf("🔒 Dialing %s@%s (TLS)...\n", cfg.Destination, cfg.SipDomain)
+	} else {
+		fmt.Printf("🔒 Dialing %s@%s (UDP)...\n", cfg.Destination, cfg.SipDomain)
+	}
+
 	fmt.Println("----------------------------------------")
 
 	tx, err := client.TransactionRequest(ctx, req)
